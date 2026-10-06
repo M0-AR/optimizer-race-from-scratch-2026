@@ -192,6 +192,95 @@ class Muon:
         return out
 
 
+def _spectral_norm_power(M, u, iters=3):
+    """Top singular value of 2D M via power iteration (no SVD). u persists across steps."""
+    for _ in range(iters):
+        v = M @ u
+        n = np.linalg.norm(v) + 1e-12
+        v = v / n
+        u = M.T @ v
+        u = u / (np.linalg.norm(u) + 1e-12)
+    return float(np.linalg.norm(M @ u)), u
+
+
+class SpectraMix:
+    """Our contender (2026): adaptively blend Muon <-> Adam per layer, per step.
+
+    Thesis (from this repo's market-transfer finding): orthogonalization helps when the
+    momentum spectrum is CONCENTRATED (few directions matter: transformers, vision MLP) and
+    hurts when it is FLAT (heavy-tailed noise: finance). So measure concentration with the
+    stable rank  sr = ||M||_F^2 / ||M||_2^2  in [1, r]  (spectral norm via 3 power iterations,
+    no SVD), map to conc = 1-(sr-1)/(r-1) in [0,1], and set
+        alpha = sigmoid(k*(conc-c0))   (k=20, c0=0.5; k=20 measured best, k=8 too soft, k=50 flips)
+        U = alpha*O/rms(O) + (1-alpha)*A/rms(A), renormalized, stepped at the blended scale
+    where O = Newton-Schulz-5(momentum) and A = Adam direction. Endpoints are EXACT:
+    alpha=1 -> Muon step, alpha=0 -> Adam step (unit-tested below in try_spectramix.py).
+    1D params (biases) always take the Adam path. Decoupled weight decay like AdamW.
+    """
+
+    def __init__(self, momentum=0.95, ns_steps=5, adam_b1=0.9, adam_b2=0.999,
+                 eps=1e-8, weight_decay=0.0, k=20.0, c0=0.5):
+        self.beta = momentum
+        self.ns_steps = ns_steps
+        self.b1, self.b2, self.eps = adam_b1, adam_b2, eps
+        self.wd = weight_decay
+        self.k, self.c0 = k, c0
+
+    def init_state(self, params):
+        rng = np.random.default_rng(0)
+        st = {"mom": _zeros_like(params), "m": _zeros_like(params),
+              "v": _zeros_like(params), "u": [],
+              "alphas": []}  # mean alpha per 2D param, for diagnostics
+        for p in params:
+            if p.ndim >= 2:
+                n = p.shape[1] if p.ndim == 2 else int(np.prod(p.shape[1:]))
+                u = rng.standard_normal(n)
+                st["u"].append(u / (np.linalg.norm(u) + 1e-12))
+            else:
+                st["u"].append(None)
+        return st
+
+    def step(self, params, grads, state, lr, t=1):
+        def sig(x):
+            return 1.0 / (1.0 + np.exp(-x))
+        out, alphas = [], []
+        b1t, b2t = 1 - self.b1 ** t, 1 - self.b2 ** t
+        for i, (p, g) in enumerate(zip(params, grads)):
+            pd = p * (1 - lr * self.wd) if self.wd else p
+            state["mom"][i] = self.beta * state["mom"][i] + (1 - self.beta) * g
+            state["m"][i] = self.b1 * state["m"][i] + (1 - self.b1) * g
+            state["v"][i] = self.b2 * state["v"][i] + (1 - self.b2) * g * g
+            mh, vh = state["m"][i] / b1t, state["v"][i] / b2t
+            A = mh / (np.sqrt(vh) + self.eps)  # Adam direction
+            if p.ndim < 2:
+                out.append(pd - lr * A)
+                alphas.append(float("nan"))
+                continue
+            shape = g.shape
+            M2 = state["mom"][i].reshape(shape[0], -1) if state["mom"][i].ndim > 2 else state["mom"][i]
+            F = float(np.linalg.norm(M2))
+            if F < 1e-12:  # dead gradient -> Adam path
+                out.append(pd - lr * A)
+                alphas.append(0.0)
+                continue
+            s1, u = _spectral_norm_power(M2, state["u"][i])
+            state["u"][i] = u
+            r = min(M2.shape)
+            sr = min(max(F * F / max(s1 * s1, 1e-18), 1.0), float(r))
+            conc = 1.0 - (sr - 1.0) / max(r - 1.0, 1e-9)
+            alpha = float(sig(self.k * (conc - self.c0)))
+            O = zeropower_via_newtonschulz5(M2, self.ns_steps).reshape(shape)
+            O = O * 0.2 * (max(shape) ** 0.5)  # same RMS-match as Muon
+            ro, ra = float(np.sqrt((O * O).mean()) + 1e-12), float(np.sqrt((A * A).mean()) + 1e-12)
+            U = alpha * O / ro + (1 - alpha) * A / ra
+            U = U / (float(np.sqrt((U * U).mean())) + 1e-12)
+            scale = alpha * ro + (1 - alpha) * ra  # endpoint-exact scales
+            out.append(pd - lr * U * scale)
+            alphas.append(alpha)
+        state["alphas"] = alphas
+        return out
+
+
 def make_optimizer(name, **kw):
     name = name.lower()
     if name in ("gd", "sgd"):
@@ -206,4 +295,6 @@ def make_optimizer(name, **kw):
         return AdamW(weight_decay=kw.get("weight_decay", 0.01))
     if name == "muon":
         return Muon(weight_decay=kw.get("weight_decay", 0.0))
+    if name in ("spectramix", "smx"):
+        return SpectraMix(weight_decay=kw.get("weight_decay", 0.0))
     raise ValueError(f"unknown optimizer {name}")
