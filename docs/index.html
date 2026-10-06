@@ -51,11 +51,21 @@ code{background:#0b1220;padding:2px 6px;border-radius:6px}
 <tr><td>Momentum</td><td>0.232</td><td>90.0%</td></tr>
 <tr><td>RMSprop</td><td>0.200</td><td>89.8%</td></tr>
 <tr><td><b>Adam</b></td><td><b>0.114</b></td><td><b>93.2%</b></td></tr>
-<tr><td><b>Muon</b></td><td><b>0.073</b></td><td><b>95.8%</b></td></tr></table>
-<p style="color:var(--mut)">Quick protocol (200 steps). Full 400-step protocol in <code>results/results.json</code>. Live BTC market: Adam 55.2% &gt; Momentum 53.7% = RMSprop &gt; Muon 52.2% &gt; SGD 50.7% — the ranking compresses near coin-flip.</p>
+<tr><td>Muon (reference-faithful)</td><td>0.121</td><td>93.0%</td></tr>
+<tr><td><b>SpectraMix (ours)</b></td><td><b>0.072</b></td><td><b>94.8%</b></td></tr>
+<tr><td><b>Referee-hedge (ours)</b></td><td><b>0.053</b></td><td><b>95.6%</b></td></tr>
+<tr><td><b>Pilot, 0 LRs (ours)</b></td><td><b>0.046</b></td><td>94.2%</td></tr></table>
+<p style="color:var(--mut)">Quick protocol (200 steps). At 400 steps: Pilot <b>0.019 / 96.0%</b>, Referee-greedy 0.052 / 95.6%, SpectraMix 0.058 / 95.2%. Live BTC market compresses near coin-flip (50–54% for all). Full numbers in <code>results/results.json</code>.</p>
 <img src="figures/race_best_loss.png" alt="Best loss bars"><br><br>
 <img src="figures/learning_curves.png" alt="Learning curves"><br><br>
 <img src="figures/market_acc.png" alt="Market accuracy vs coin flip"></div>
+
+<div class="card"><h2>🔬 Our inventions (all measured, all reproducible)</h2>
+<table><tr><th>What</th><th>Idea in one line</th><th>Result</th></tr>
+<tr><td><b>SpectraMix</b></td><td>Blend Muon ↔ Adam by measured spectral concentration</td><td>400-step 0.058 / 95.2%</td></tr>
+<tr><td><b>Referee</b></td><td>Per-step election of updates on fresh data — measure, don't model</td><td>Hedge 0.053 / 95.6%</td></tr>
+<tr><td><b>Pilot</b></td><td>Step-size-free: elect direction + scale, DoG base, spike guard, 0 LRs</td><td><b>400-step 0.019 / 96.0%</b></td></tr></table>
+<p style="color:var(--mut)">Reproduce: <code>make spectramix</code>, <code>make referee</code>, <code>make pilot</code>. The loss itself votes Adam early → spectral late — schedule rediscovered from data, never prescribed.</p></div>
 
 <div class="card"><h2>🧪 Quiz — from zero to professional (10 questions)</h2>
 <p>Pick an answer, get instant feedback. Score 8+ and you know more than most interview candidates.</p>
