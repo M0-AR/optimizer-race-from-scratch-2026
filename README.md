@@ -121,7 +121,7 @@ than on small vision nets. That is the whole story of modern optimization in one
 Digit network, median of seeds (quick protocol: 200 steps, 5-LR grid, 3 seeds — absolutes trail the
 video's 400-step full grid; run `--full` for paper numbers. Post-audit honest note: with the
 reference-faithful Nesterov fix, Muon starts slower on the 200-step grid and Adam edges it there; at
-400 steps Muon retakes the loss crown 0.076 vs 0.084 — full story in §5.6, including our SpectraMix):
+400 steps our SpectraMix leads on loss too (0.058 — full story in §5.6):
 
 | Optimizer | Video loss / acc (400 steps) | Ours (quick) | Verdict |
 |---|---|---|---|
@@ -129,7 +129,7 @@ reference-faithful Nesterov fix, Muon starts slower on the 200-step grid and Ada
 | Momentum | 0.059 / 94.8% | 0.232 / 90.0% | same band as RMSprop |
 | RMSprop | 0.064 | 0.200 / 89.8% | same band; fastest to get close |
 | Adam | **0.051** / 94.6% | **0.114 / 93.2%** | best classical on the quick grid |
-| **Muon** | **0.026** / 96.0% | 0.121 / 93.0% | slow starter here (faithful Nesterov); 400-step loss crown 0.076 — see §5.6 |
+| **Muon** | **0.026** / 96.0% | 0.121 / 93.0% | slow starter here (faithful Nesterov); see §5.6 for 400-step + our optimizers |
 
 Valley (L = ½x² + 50y², κ=100, start (−10,1), loss 100):
 
@@ -147,7 +147,8 @@ Live-market transfer (BTC/USD direction, 267 train / 67 test, CoinGecko live 202
 | SGD 50.7% | Momentum 53.7% | RMSprop 53.7% | **Adam 55.2%** | Muon 53.7% |
 
 *Post-audit: the Muon bias-state fix lifted its market transfer 52.2% → 53.7% (ties Momentum/RMSprop).
-Fair-grid re-check with window=21 (5 LRs × 5 seeds, live BTC): SpectraMix 56.5% > Muon 52.2% > Adam 50.7% — §5.6.*
+Fair-grid re-check with window=21 (5 LRs × 5 seeds, live BTC): all methods land 50–54% (seed noise at
+n=69 dominates); SpectraMix/Referee tie the best — §5.6.*
 
 ![Best-loss bars](figures/race_best_loss.png)
 ![Learning curves, lr=0.01](figures/learning_curves.png)
@@ -307,11 +308,11 @@ Reproduce: `python3 experiments/try_spectramix.py`.
 
 | | Digits 200-step | Digits 400-step | Live BTC fair grid (window=21, 5 LRs × 5 seeds) |
 |---|---|---|---|
-| Muon | 0.121 / 93.0% | **0.076** / 94.2% | 52.2% |
-| **SpectraMix** | **0.072 / 94.8%** | 0.087 / **95.2%** | **56.5%** |
+| Muon | 0.121 / 93.0% | 0.076 / 94.2% | 52.2% |
+| SpectraMix | 0.072 / 94.8% | **0.058 / 95.2%** | 52.2% |
 | Adam | 0.114 / 93.2% | 0.084 / 94.4% | 50.7% |
 
-Best loss on short runs, best accuracy AND best market transfer overall; Muon keeps the 400-step loss crown.
+Best short-run loss, best long-run loss AND accuracy; market ties (all within seed noise at n=69).
 Two audit bugs fixed along the way (both verified): Muon's bias momenta were silently dropped (no-op
 write-back — now accumulate), and our Nesterov blend was inverted vs the reference
 (β·g+(1−β)·buf → (1−β)·g+β·buf). Honest limits: k/schedule tuned on one vision task; market n=69; loss vs
@@ -326,12 +327,20 @@ pass on a fresh holdout micro-batch**, commit the winner (greedy) or Hedge-sampl
 exists (ROR/AOS/OptiRoulette/RL-choose, all 2026); per-step zero-scout selection — ROR's own cost curve
 pushed to its s→0 limit — did not. Reproduce: `python3 experiments/try_referee.py`.
 
-| | Digits loss / acc (200 steps) | Live BTC |
-|---|---|---|
-| Best fixed (SpectraMix) | 0.072 / 94.8% | 53.6% |
-| **Referee-greedy** | **0.065 / 95.2%** | 53.6% (ties best, never loses) |
-| **Referee-hedge** | **0.053** / 95.0% | — |
-| Extra cost | ~1.3× per step (forwards are cheap next to Newton–Schulz) | same |
+| | Digits loss / acc (200 steps) | Digits 400-step ×5 | Live BTC |
+|---|---|---|---|
+| Best fixed (SpectraMix) | 0.072 / 94.8% | 0.058 / 95.2% | 52.2% |
+| **Referee-greedy** | 0.065 / 95.2% | **0.052 / 95.6%** | 52.2% (ties best, never loses) |
+| **Referee-hedge (η=8)** | **0.053 / 95.6%** | — | — |
+| Referee-adahedge (parameter-free) | 0.072 / 94.0% | 0.064 / 95.0% | 50.7% |
+| Extra cost | ~1.3× per step (forwards are cheap next to Newton–Schulz) | same | same |
+
+v2 hardenings (all measured, `experiments/try_referee.py`): η sweep {1,2,4,8,16} → 8 wins on accuracy
+(0.956), ties 4 on loss — the old default 4 was already near-optimal; AdaHedge self-tuning (de Rooij et
+al., no sweep needed) lands 0.072 ≈ greedy, i.e. parameter-freedom costs ~0.02 here; dropping momentum
+from the pool HURTS greedy (0.065→0.087) though Hedge never picks it — its late re-entry (24% of Q4)
+is real signal, not noise; holdout size {32,64,128} changes nothing decisive, so 32 stays (cheapest);
+400-step ×5 confirmation: referee-greedy 0.052/0.956 beats every fixed rule at long horizon too.
 
 The selection log is itself a discovery: Hedge picks Adam 78% of Q1, then Muon-family ~100% for Q2–Q4
 (momentum: never) — the loss itself rediscovers "adaptive early, spectral late" from data, no schedule
