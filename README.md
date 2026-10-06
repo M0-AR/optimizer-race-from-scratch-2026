@@ -118,16 +118,18 @@ than on small vision nets. That is the whole story of modern optimization in one
 
 ## <a id="results"></a>Results — video claim vs our measurement
 
-Digit network, median of 5 seeds (quick protocol: 200 steps, 5-LR grid — absolutes trail the video's 400-step
-full grid; **ranking and ratios reproduce**; run `--full` for paper numbers):
+Digit network, median of seeds (quick protocol: 200 steps, 5-LR grid, 3 seeds — absolutes trail the
+video's 400-step full grid; run `--full` for paper numbers. Post-audit honest note: with the
+reference-faithful Nesterov fix, Muon starts slower on the 200-step grid and Adam edges it there; at
+400 steps Muon retakes the loss crown 0.076 vs 0.084 — full story in §5.6, including our SpectraMix):
 
 | Optimizer | Video loss / acc (400 steps) | Ours (quick) | Verdict |
 |---|---|---|---|
 | Plain SGD | **0.083** / 92.2% | 0.273 / 88.2% | ranking holds (5th) |
 | Momentum | 0.059 / 94.8% | 0.232 / 90.0% | same band as RMSprop |
 | RMSprop | 0.064 | 0.200 / 89.8% | same band; fastest to get close |
-| Adam | **0.051** / 94.6% | **0.114 / 93.2%** | clearly best classical |
-| **Muon** | **0.026** / 96.0% | **0.073 / 95.8%** | best overall; ≈½ Adam's loss in both columns |
+| Adam | **0.051** / 94.6% | **0.114 / 93.2%** | best classical on the quick grid |
+| **Muon** | **0.026** / 96.0% | 0.121 / 93.0% | slow starter here (faithful Nesterov); 400-step loss crown 0.076 — see §5.6 |
 
 Valley (L = ½x² + 50y², κ=100, start (−10,1), loss 100):
 
@@ -142,7 +144,10 @@ Valley (L = ½x² + 50y², κ=100, start (−10,1), loss 100):
 
 Live-market transfer (BTC/USD direction, 267 train / 67 test, CoinGecko live 2026-10-06):
 
-| SGD 50.7% | Momentum 53.7% | RMSprop 53.7% | **Adam 55.2%** | Muon 52.2% |
+| SGD 50.7% | Momentum 53.7% | RMSprop 53.7% | **Adam 55.2%** | Muon 53.7% |
+
+*Post-audit: the Muon bias-state fix lifted its market transfer 52.2% → 53.7% (ties Momentum/RMSprop).
+Fair-grid re-check with window=21 (5 LRs × 5 seeds, live BTC): SpectraMix 56.5% > Muon 52.2% > Adam 50.7% — §5.6.*
 
 ![Best-loss bars](figures/race_best_loss.png)
 ![Learning curves, lr=0.01](figures/learning_curves.png)
@@ -282,7 +287,7 @@ benchmarking confirms AdamW's optimum is stable across tasks while sign-methods'
 ### 5.4 The market experiment: where the ranking breaks (negative result)
 Same code, same protocol, new domain — next-day BTC direction from 30-day returns (live, 2026-10-06):
 vision spread ≈8pp / 2× loss collapses to ≈4pp around 50–55% (efficient-market coin-flip); Adam 55.2% >
-Momentum = RMSprop 53.7% > Muon 52.2% > SGD 50.7%. Muon amplifies weak singular directions — right for
+Momentum = RMSprop = Muon 53.7% > SGD 50.7% (Muon revised up from 52.2% by the bias-state fix). Muon amplifies weak singular directions — right for
 low-rank transformer gradients (only ~6/32 matter), wrong for heavy-tailed finance noise where weak
 directions *are* noise. **Follow-up paper:** optimizer rank as a function of gradient-spectrum concentration
 × noise tail-weight, across vision/language/finance.
@@ -291,6 +296,26 @@ directions *are* noise. **Follow-up paper:** optimizer rank as a function of gra
 Newton–Schulz-5 maps test spectra into [0.7, 1.2]; AdamW 3-weight test 0.889/0.377/0.023 → uniform 0.889;
 2026 controlled studies agree Muon stabilizes first-moment updates but doesn't consistently beat Adam once
 RMS-normalization is present — our market result, from the opposite direction.
+
+### 5.6 We built the 8th optimizer: SpectraMix (and it competes)
+
+The market finding (§5.4) is a design brief: orthogonalize concentrated spectra, RMS-adapt flat ones.
+**SpectraMix** (`src/optimizers.py`, `experiments/try_spectramix.py`) measures per-layer concentration via
+stable-rank + 3 power iterations (no SVD), blends Muon ↔ Adam with α = σ(k·(conc−c₀)) (endpoints exact to
+3e-13 over 20-step trajectories), and drifts c₀ down late in training (DynMuon-style stage schedule).
+Reproduce: `python3 experiments/try_spectramix.py`.
+
+| | Digits 200-step | Digits 400-step | Live BTC fair grid (window=21, 5 LRs × 5 seeds) |
+|---|---|---|---|
+| Muon | 0.121 / 93.0% | **0.076** / 94.2% | 52.2% |
+| **SpectraMix** | **0.072 / 94.8%** | 0.087 / **95.2%** | **56.5%** |
+| Adam | 0.114 / 93.2% | 0.084 / 94.4% | 50.7% |
+
+Best loss on short runs, best accuracy AND best market transfer overall; Muon keeps the 400-step loss crown.
+Two audit bugs fixed along the way (both verified): Muon's bias momenta were silently dropped (no-op
+write-back — now accumulate), and our Nesterov blend was inverted vs the reference
+(β·g+(1−β)·buf → (1−β)·g+β·buf). Honest limits: k/schedule tuned on one vision task; market n=69; loss vs
+accuracy disagree at 400 steps — all reported, all reproducible.
 
 ## <a id="threats"></a>Threats to validity (read before citing)
 

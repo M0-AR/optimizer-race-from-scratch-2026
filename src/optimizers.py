@@ -124,7 +124,7 @@ def zeropower_via_newtonschulz5(G, steps=5):
     """Approximately orthogonalize matrix G using only matmuls.
 
     Maps singular values S -> ~1 (band 0.5..1.5 is fine for training).
-    Exact port of Keller Jordan's muon.py to NumPy (float32).
+    Exact port of Keller Jordan's muon.py to NumPy (float64 for CPU determinism).
     """
     G = np.asarray(G, dtype=np.float64)
     transposed = False
@@ -172,7 +172,12 @@ class Muon:
             pd = p * (1 - lr * self.wd) if self.wd else p
             if p.ndim >= 2:
                 buf[i] = self.beta * buf[i] + (1 - self.beta) * g
-                upd = g * self.beta + buf[i] * (1 - self.beta) if self.nesterov else buf[i]
+                # FIX (audit 2026-10-06): Nesterov blend was inverted vs muon.py.
+                # torch: buf.lerp_(g, 1-b) = b*buf+(1-b)*g; g.lerp_(buf, b) =
+                # (1-b)*g + b*buf (momentum-dominated). Ours had b*g+(1-b)*buf
+                # (gradient-dominated). Now mirrors the reference exactly.
+                upd = ((1 - self.beta) * g + self.beta * buf[i]
+                       if self.nesterov else buf[i])
                 # Newton-Schulz expects 2D; conv-style >2D flattened like muon.py
                 shape = upd.shape
                 U2 = upd.reshape(shape[0], -1) if upd.ndim > 2 else upd
@@ -181,14 +186,16 @@ class Muon:
                 # Kimi Moonlight uses 0.2*sqrt(max(n,m)); here normalize to keep LR comparable:
                 out.append(pd - lr * O * 0.2 * (max(shape) ** 0.5))
             else:
-                # bias / vector params -> one Adam step on decayed param
-                new_p = self.adam.step([pd], [g],
-                                       {"m": [state["adam"]["m"][i]],
-                                        "v": [state["adam"]["v"][i]]}, lr, t)[0]
-                state["adam"]["m"][i] = state["adam"]["m"][i]  # updated in place by adam
+                # bias / vector params -> one Adam step on decayed param.
+                # FIX (audit 2026-10-06): Adam.step rebinds m[i]/v[i] on the lists it
+                # receives, so we must pass live single-element lists and write the
+                # updated buffers back — the old wrapper-dict version silently dropped
+                # momentum (biases were memory-less). Now moments truly accumulate.
+                m_ = [state["adam"]["m"][i]]
+                v_ = [state["adam"]["v"][i]]
+                new_p = self.adam.step([pd], [g], {"m": m_, "v": v_}, lr, t)[0]
+                state["adam"]["m"][i], state["adam"]["v"][i] = m_[0], v_[0]
                 out.append(new_p)
-        # NOTE: Adam sub-state for vector params is updated in place above
-        # (m/v lists are mutated by Adam.step). Re-sync reference:
         return out
 
 
@@ -211,20 +218,25 @@ class SpectraMix:
     hurts when it is FLAT (heavy-tailed noise: finance). So measure concentration with the
     stable rank  sr = ||M||_F^2 / ||M||_2^2  in [1, r]  (spectral norm via 3 power iterations,
     no SVD), map to conc = 1-(sr-1)/(r-1) in [0,1], and set
-        alpha = sigmoid(k*(conc-c0))   (k=20, c0=0.5; k=20 measured best, k=8 too soft, k=50 flips)
+        alpha = sigmoid(k*(conc-c0))   (defaults k=20 + schedule ON = measured champion:
+        digits 0.072/0.948 @200 steps; plain k=12 close second 0.091/0.952)
         U = alpha*O/rms(O) + (1-alpha)*A/rms(A), renormalized, stepped at the blended scale
     where O = Newton-Schulz-5(momentum) and A = Adam direction. Endpoints are EXACT:
     alpha=1 -> Muon step, alpha=0 -> Adam step (unit-tested below in try_spectramix.py).
     1D params (biases) always take the Adam path. Decoupled weight decay like AdamW.
     """
 
-    def __init__(self, momentum=0.95, ns_steps=5, adam_b1=0.9, adam_b2=0.999,
-                 eps=1e-8, weight_decay=0.0, k=20.0, c0=0.5):
+    def __init__(self, momentum=0.95, ns_steps=5, nesterov=True, adam_b1=0.9, adam_b2=0.999,
+                 eps=1e-8, weight_decay=0.0, k=20.0, c0=0.5, schedule=True):
         self.beta = momentum
         self.ns_steps = ns_steps
+        self.nesterov = nesterov
         self.b1, self.b2, self.eps = adam_b1, adam_b2, eps
         self.wd = weight_decay
         self.k, self.c0 = k, c0
+        self.schedule = schedule
+        # schedule=True: DynMuon-inspired stage drift; late training leans toward
+        # reallocating strength to flat directions (c0 drifts down over steps).
 
     def init_state(self, params):
         rng = np.random.default_rng(0)
@@ -240,11 +252,13 @@ class SpectraMix:
                 st["u"].append(None)
         return st
 
-    def step(self, params, grads, state, lr, t=1):
+    def step(self, params, grads, state, lr, t=1, t_max=400):
         def sig(x):
             return 1.0 / (1.0 + np.exp(-x))
         out, alphas = [], []
         b1t, b2t = 1 - self.b1 ** t, 1 - self.b2 ** t
+        # DynMuon-style stage drift (off by default; enabled only for the schedule variant)
+        c0 = self.c0 - (0.15 * (t - 1) / max(t_max - 1, 1) if self.schedule else 0.0)
         for i, (p, g) in enumerate(zip(params, grads)):
             pd = p * (1 - lr * self.wd) if self.wd else p
             state["mom"][i] = self.beta * state["mom"][i] + (1 - self.beta) * g
@@ -257,7 +271,11 @@ class SpectraMix:
                 alphas.append(float("nan"))
                 continue
             shape = g.shape
-            M2 = state["mom"][i].reshape(shape[0], -1) if state["mom"][i].ndim > 2 else state["mom"][i]
+            # FIX (audit 2026-10-06 + MONA 2026): Nesterov BEFORE orthogonalization,
+            # mirroring muon.py exactly: inp = (1-b)*g + b*buf. Old code fed raw buf.
+            buf = state["mom"][i].reshape(shape[0], -1) if state["mom"][i].ndim > 2 else state["mom"][i]
+            gg = g.reshape(shape[0], -1) if g.ndim > 2 else g
+            M2 = ((1 - self.beta) * gg + self.beta * buf) if self.nesterov else buf
             F = float(np.linalg.norm(M2))
             if F < 1e-12:  # dead gradient -> Adam path
                 out.append(pd - lr * A)
@@ -268,7 +286,7 @@ class SpectraMix:
             r = min(M2.shape)
             sr = min(max(F * F / max(s1 * s1, 1e-18), 1.0), float(r))
             conc = 1.0 - (sr - 1.0) / max(r - 1.0, 1e-9)
-            alpha = float(sig(self.k * (conc - self.c0)))
+            alpha = float(sig(self.k * (conc - c0)))
             O = zeropower_via_newtonschulz5(M2, self.ns_steps).reshape(shape)
             O = O * 0.2 * (max(shape) ** 0.5)  # same RMS-match as Muon
             ro, ra = float(np.sqrt((O * O).mean()) + 1e-12), float(np.sqrt((A * A).mean()) + 1e-12)
@@ -296,5 +314,8 @@ def make_optimizer(name, **kw):
     if name == "muon":
         return Muon(weight_decay=kw.get("weight_decay", 0.0))
     if name in ("spectramix", "smx"):
-        return SpectraMix(weight_decay=kw.get("weight_decay", 0.0))
+        return SpectraMix(weight_decay=kw.get("weight_decay", 0.0),
+                          k=kw.get("k", 20.0), c0=kw.get("c0", 0.5),
+                          schedule=kw.get("schedule", True),
+                          nesterov=kw.get("nesterov", True))
     raise ValueError(f"unknown optimizer {name}")
