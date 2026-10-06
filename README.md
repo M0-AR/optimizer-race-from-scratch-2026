@@ -317,6 +317,29 @@ write-back — now accumulate), and our Nesterov blend was inverted vs the refer
 (β·g+(1−β)·buf → (1−β)·g+β·buf). Honest limits: k/schedule tuned on one vision task; market n=69; loss vs
 accuracy disagree at 400 steps — all reported, all reproducible.
 
+### 5.7 A new principle, not a new variant: the Referee (measure, don't model)
+
+Every optimizer above *models* the landscape (moments, spectra, curvature proxies) to choose an update.
+The Referee inverts this: keep 4 candidates (momentum, Adam, Muon, SpectraMix — each with own state and
+own best LR, all observing every gradient), propose 4 next-weights per step, score each with **one forward
+pass on a fresh holdout micro-batch**, commit the winner (greedy) or Hedge-sample it. Epoch-level selection
+exists (ROR/AOS/OptiRoulette/RL-choose, all 2026); per-step zero-scout selection — ROR's own cost curve
+pushed to its s→0 limit — did not. Reproduce: `python3 experiments/try_referee.py`.
+
+| | Digits loss / acc (200 steps) | Live BTC |
+|---|---|---|
+| Best fixed (SpectraMix) | 0.072 / 94.8% | 53.6% |
+| **Referee-greedy** | **0.065 / 95.2%** | 53.6% (ties best, never loses) |
+| **Referee-hedge** | **0.053** / 95.0% | — |
+| Extra cost | ~1.3× per step (forwards are cheap next to Newton–Schulz) | same |
+
+The selection log is itself a discovery: Hedge picks Adam 78% of Q1, then Muon-family ~100% for Q2–Q4
+(momentum: never) — the loss itself rediscovers "adaptive early, spectral late" from data, no schedule
+prescribed. Greedy additionally re-hires momentum late (24% in Q4). Caveats: holdout comes from the train
+pool (streaming fresh batches, never trained on; test set untouched — same discipline as ROR, whose authors
+flag repeated-query overfitting); market gaps ≈ seed noise at n=69, so "ties best" is the honest market
+claim. Theory path: full-information experts → Hedge no-regret vs the best fixed candidate in hindsight.
+
 ## <a id="threats"></a>Threats to validity (read before citing)
 
 Quick protocol understates absolutes (200 steps, 5 LRs) — use `--full` for paper numbers. NumPy CPU MLP ≠
