@@ -1,0 +1,23 @@
+services:
+  optimizer-race:
+    build: .
+    container_name: optimizer-race-2026
+    volumes:
+      - ./results:/app/results
+      - ./figures:/app/figures
+      - ./data:/app/data
+    environment:
+      - PYTHONPATH=/app
+      - MPLBACKEND=Agg
+    command: ["python3", "experiments/run_all.py", "--full"]
+
+  optimizer-race-quick:
+    build: .
+    container_name: optimizer-race-quick
+    volumes:
+      - ./results:/app/results
+      - ./figures:/app/figures
+    environment:
+      - PYTHONPATH=/app
+      - MPLBACKEND=Agg
+    command: ["python3", "experiments/run_all.py", "--quick"]
