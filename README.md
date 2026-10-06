@@ -47,8 +47,9 @@ python3 experiments/run_all.py --quick     # ~2 min: valley + digits race + LIVE
 You get `results/results.json` (every number) + `figures/` (all charts below).
 Full protocol: `python3 experiments/run_all.py --full` (~15 min, 17 learning rates × 5 seeds × 400 steps).
 Docker: `docker compose run --rm optimizer-race-quick`. Interactive web version:
-open `preview.html` in a browser, or publish it via GitHub Pages (Settings → Pages → Deploy from branch →
-`main` → `/docs`, then share `https://<you>.github.io/<repo>/`).
+open `preview.html` in a browser, or visit the published site:
+https://m0-ar.github.io/optimizer-race-from-scratch-2026/ (quiz at
+https://m0-ar.github.io/optimizer-race-from-scratch-2026/preview.html).
 
 ## <a id="beginner-guide"></a>🌱 Beginner guide — read this and you are a professional
 
@@ -203,15 +204,42 @@ no advantage — because market noise has no "weak but real" directions to rescu
 
 ## <a id="interactive-site"></a>Interactive site + quiz + GitHub Pages
 
-`preview.html` (repo root, for local preview) and `docs/index.html` (identical content, the Pages source) form
-a self-contained site (no build step, no external JS): result tables, all figures, the demo GIF, and a
-**10-question interactive quiz** (single-choice + instant feedback + score) that walks from "what is a loss?"
-to "when does Muon fail?" — scratch to pro in one page.
+`preview.html` (repo root) and `docs/preview.html` + `docs/index.html` (identical content, the Pages
+source) form a self-contained site (no build step, no external JS): result tables, all figures, the demo GIF,
+and a **10-question interactive quiz** (single-choice + instant feedback + score) that walks from "what is a
+loss?" to "when does Muon fail?" — scratch to pro in one page. Each folder carries its own copy of the
+figures plus `.nojekyll`, so the site renders fully under **either** Pages source setting.
+
+**Live links (this repo):**
+
+| Page | URL |
+|---|---|
+| Site entry | https://m0-ar.github.io/optimizer-race-from-scratch-2026/ |
+| Interactive quiz page | https://m0-ar.github.io/optimizer-race-from-scratch-2026/preview.html |
+| Same page under root source | https://m0-ar.github.io/optimizer-race-from-scratch-2026/docs/preview.html |
 
 **Publish it (2026 flow):** push this repo to GitHub → Settings → Pages → *Deploy from a branch* → branch
-`main`, folder `/docs` → Save. Your site goes live at `https://<you>.github.io/<repo>/`. Custom domain:
+`main`, folder `/docs` (recommended) → Save, wait 1–2 min for the "pages build and deployment" run. Your site
+goes live at `https://m0-ar.github.io/optimizer-race-from-scratch-2026/`. If you keep source `/` (root) instead,
+the same pages resolve at `/preview.html` and `/docs/preview.html` — nothing breaks either way. Custom domain:
 Settings → Pages → Custom domain → add your domain → create the `CNAME` record at your DNS provider —
-GitHub provisions HTTPS automatically. Every push to `main` rebuilds the site from `/docs`.
+GitHub provisions HTTPS automatically. Every push to `main` rebuilds the site.
+
+**If a link 404s after a green deployment, diagnose in 10 seconds** (green only proves *something* built —
+check *your path* under *your source*):
+
+```bash
+BASE="https://m0-ar.github.io/optimizer-race-from-scratch-2026"
+for p in "" "preview.html" "docs/preview.html"; do
+  printf "%s -> " "/$p"; curl -s -o /dev/null -w "%{http_code}\n" "$BASE/$p"
+done
+```
+
+| `/` | `/preview.html` | `/docs/preview.html` | Meaning |
+|---|---|---|---|
+| 200 | 200 | 404 | source = `/docs` ✅, all good |
+| 200 | 200 | 200 | source = `/` (root), mirrors cover everything ✅ |
+| 404 | 404 | 404 | Pages off / still building / wrong branch — check the Actions run |
 
 ## Research method
 
