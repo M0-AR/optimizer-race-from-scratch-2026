@@ -349,6 +349,29 @@ pool (streaming fresh batches, never trained on; test set untouched — same dis
 flag repeated-query overfitting); market gaps ≈ seed noise at n=69, so "ties best" is the honest market
 claim. Theory path: full-information experts → Hedge no-regret vs the best fixed candidate in hindsight.
 
+### 5.8 What the world needs: Pilot — step-size-free optimization that wins
+
+Tuning is the tax this whole repo documents (17-try grids; million-dollar runs get one try). Parameter-free
+methods (DoG/Prodigy/DAoG) are all vector methods; spectral methods all need tuned LRs — that intersection
+was empty, and instability guards (ZClip/SA/R-metric/TIOI) live outside optimizers, not inside them. **Pilot**
+(`experiments/try_pilot.py`) fills it: candidates propose unit-RMS *directions* (their LRs discarded);
+a per-layer DoG base scale × elected {0.0625, 0.25, 1, 4} multiplier sets the step — direction AND scale
+measured on holdout, never modeled; a ZClip-faithful gradient-norm z-guard vetoes anomalous steps.
+Zero step sizes anywhere (honest label: step-size-free, not hyperparameter-free — betas/shape constants stay
+at literature defaults, never swept).
+
+| | Digits 200 | Digits 400 ×5 | Live BTC |
+|---|---|---|---|
+| Best tuned (needs grids) | 0.053 / 95.6% | 0.052 / 95.6% | 52.2% |
+| **Pilot (0 LRs)** | **0.046 / 94.2%** | **0.019 / 96.0%** | 49.3% (coin-flip; neutral, not best) |
+
+Debugged in the open, three autopsies deep: v1 died by DoG cold-start ratchet (eta 0.065→2.23, loss→24.5);
+v2 overfixed into a freeze (stall 2.30); v3's trace caught the dimensional error (DoG norm applied to a
+unit vector — 45× steps, brake-bound pinball), and the election log showed the base scale 4–16× too big
+(0.25 won 171/200) plus 32-sample election noise — fixing both (recentered menu, 128-sample holdout) gave
+the table above. Vision champion with no tuning; markets neutral (small noisy task rewards precise election
+less). That asymmetry is itself data for the phase-diagram paper.
+
 ## <a id="threats"></a>Threats to validity (read before citing)
 
 Quick protocol understates absolutes (200 steps, 5 LRs) — use `--full` for paper numbers. NumPy CPU MLP ≠
